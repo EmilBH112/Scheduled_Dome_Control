@@ -267,4 +267,5 @@ def dome_control_loop():
         time.sleep(30)  # Check every 30 seconds
 
 # Run the dome control loop
+
 dome_control_loop()
