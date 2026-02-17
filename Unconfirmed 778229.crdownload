@@ -1,0 +1,270 @@
+import time
+import win32com.client
+import requests
+from datetime import datetime
+
+# -------------------- Configuration --------------------
+ACCU_API_KEY = "JeOM7vIOoCV4asL0x8IYNR6NgIWurzbW"
+ACCU_CITY = "Cork"
+ACCU_COUNTRY_CODE = "IE"
+ACCU_UPDATE_INTERVAL = 1800  # 30 minutes in seconds
+
+WU_API_KEY = "ff0bb45debfa4a958bb45debfada9578"
+WU_STATION_ID = "ICORK57"
+WU_UPDATE_INTERVAL = 30  # seconds
+
+# -------------------- Adjustable Safety Thresholds --------------------
+accu_safety_thresholds = {
+    "temperature_min": 0,
+    "temperature_max": 30,
+    "humidity_max": 80,
+    "wind_speed_max": 20,
+    "pressure_min": 980,
+    "pressure_max": 1040,
+    "precipitation_max": 0
+}
+
+wu_safety_thresholds = {
+    "temperature_min": 0,
+    "temperature_max": 30,
+    "humidity_max": 80,
+    "wind_speed_max": 20,
+    "pressure_min": 980,
+    "pressure_max": 1030,
+    "precipitation_max": 0
+}
+
+# -------------------- Global Variables --------------------
+dome_state = "CLOSED"  # Track the state of the dome (CLOSED or OPEN)
+latest_accu_safe = False
+latest_wu_safe = False
+last_accu_request_time = 0  # Track the last AccuWeather request time
+
+# -------------------- Weather Functions --------------------
+def wind_direction(degrees):
+    if degrees is None:
+        return "N/A"
+    directions = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+                  "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"]
+    index = round(degrees / 22.5) % 16
+    return directions[index]
+
+def get_location_key(api_key, country_code, city):
+    url = f"http://dataservice.accuweather.com/locations/v1/cities/{country_code}/search?apikey={api_key}&q={city}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        if data:
+            return data[0]["Key"], data[0]["LocalizedName"]
+    except requests.exceptions.RequestException as e:
+        print(f"[AccuWeather] Error fetching location key: {e}")
+    return None, None
+
+def fetch_accuweather(api_key, location_key, location_name):
+    url = f"http://dataservice.accuweather.com/currentconditions/v1/{location_key}?apikey={api_key}&details=true"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        if not data:
+            print("[AccuWeather] No data returned.")
+            return None
+
+        obs = data[0]
+        timestamp = obs.get("LocalObservationDateTime", "")
+        try:
+            dt = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S%z")
+            time_str = dt.strftime("%H:%M:%S")
+            date_str = dt.strftime("%d/%m/%Y")
+        except Exception as e:
+            time_str, date_str = "N/A", "N/A"
+
+        print("\n" + "="*60)
+        print(f" AccuWeather Report - {location_name}")
+        print("="*60)
+        print(f"Time: {time_str}      | Date: {date_str}")
+        print("-" * 60)
+        print(f"Temperature      : {obs['Temperature']['Metric']['Value']}C")
+        print(f"Condition        : {obs['WeatherText']}")
+        print(f"Cloud Cover      : {obs.get('CloudCover', 'N/A')}%")
+        print(f"Humidity         : {obs.get('RelativeHumidity', 'N/A')}%")
+        print(f"Pressure         : {obs['Pressure']['Metric']['Value']} hPa")
+        print(f"Wind             : {obs['Wind']['Speed']['Metric']['Value']} km/h {obs['Wind']['Direction']['Localized']}")
+        print("="*60 + "\n")
+        
+        return obs
+
+    except requests.exceptions.RequestException as e:
+        print(f"[AccuWeather] Error fetching weather data: {e}")
+        return None
+
+def fetch_weather_underground():
+    url = f"https://api.weather.com/v2/pws/observations/current?stationId={WU_STATION_ID}&format=json&units=m&apiKey={WU_API_KEY}"
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        obs = data.get("observations", [{}])[0]
+
+        if obs:
+            timestamp = obs.get("obsTimeLocal", "N/A")
+            try:
+                dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                date_str = dt.strftime("%d/%m/%Y")
+                time_str = dt.strftime("%H:%M:%S")
+            except Exception:
+                time_str, date_str = "N/A", "N/A"
+
+            wind_dir_deg = obs.get("winddir")
+            wind_dir = wind_direction(wind_dir_deg) if wind_dir_deg is not None else "N/A"
+
+            print("\n" + "-"*60)
+            print(f" Weather Underground - Station: {WU_STATION_ID}")
+            print("-"*60)
+            print(f"Time: {time_str}      | Date: {date_str}")
+            print("-" * 60)
+            print(f"Temperature      : {obs['metric']['temp']}C")
+            print(f"Feels Like       : {obs['metric']['heatIndex']}C")
+            print(f"Dew Point        : {obs['metric']['dewpt']}C")
+            print(f"Humidity         : {obs['humidity']}%")
+            print(f"Wind Speed       : {obs['metric']['windSpeed']} km/h")
+            print(f"Wind Gust        : {obs['metric']['windGust']} km/h")
+            print(f"Wind Direction   : {wind_dir_deg}degrees ({wind_dir})")
+            print(f"Pressure         : {obs['metric']['pressure']} hPa")
+            print(f"Precip Rate Now  : {obs['metric']['precipRate']} mm/h")
+            print(f"Precip Today     : {obs['metric']['precipTotal']} mm")
+            print(f"UV Index         : {obs.get('uv', 'N/A')}")
+            print(f"Solar Radiation  : {obs.get('solarRadiation', 'N/A')} W/m^2")
+            print("-"*60 + "\n")
+            
+            return obs
+
+        else:
+            print("[WU] No observation data found.")
+            return None
+    except requests.exceptions.RequestException as e:
+        print(f"[WU] Error fetching WU data: {e}")
+        return None
+
+# -------------------- Weather Safety Check --------------------
+def is_weather_safe(accu_data, wu_data, thresholds, station="AccuWeather"):
+    """
+    Evaluate if weather conditions are safe. Missing or out-of-range data
+    is treated as unsafe.
+    """
+    if station == "AccuWeather" and accu_data:
+        accu_temp = accu_data['Temperature']['Metric']['Value']
+        accu_humidity = accu_data.get('RelativeHumidity', 0)
+        accu_pressure = accu_data['Pressure']['Metric']['Value']
+        accu_precipitation = accu_data.get('Precipitation', 0)
+        accu_wind_speed = accu_data['Wind']['Speed']['Metric']['Value']
+
+        if not (thresholds["temperature_min"] <= accu_temp <= thresholds["temperature_max"]):
+            print("[AccuWeather] Temperature out of safe range!")
+            return False
+        if accu_humidity > thresholds["humidity_max"]:
+            print("[AccuWeather] Humidity exceeds safe limit!")
+            return False
+        if not (thresholds["pressure_min"] <= accu_pressure <= thresholds["pressure_max"]):
+            print("[AccuWeather] Pressure out of safe range!")
+            return False
+        if accu_wind_speed > thresholds["wind_speed_max"]:
+            print("[AccuWeather] Wind speed exceeds safe limit!")
+            return False
+        if accu_precipitation > thresholds["precipitation_max"]:
+            print("[AccuWeather] Precipitation exceeds safe limit!")
+            return False
+
+    elif station == "WU" and wu_data:
+        wu_temp = wu_data['metric']['temp']
+        wu_humidity = wu_data['humidity']
+        wu_pressure = wu_data['metric']['pressure']
+        wu_precipitation = wu_data['metric']['precipTotal']
+        wu_wind_speed = wu_data['metric']['windSpeed']
+
+        if not (thresholds["temperature_min"] <= wu_temp <= thresholds["temperature_max"]):
+            print("[WU] Temperature out of safe range!")
+            return False
+        if wu_humidity > thresholds["humidity_max"]:
+            print("[WU] Humidity exceeds safe limit!")
+            return False
+        if not (thresholds["pressure_min"] <= wu_pressure <= thresholds["pressure_max"]):
+            print("[WU] Pressure out of safe range!")
+            return False
+        if wu_wind_speed > thresholds["wind_speed_max"]:
+            print("[WU] Wind speed exceeds safe limit!")
+            return False
+        if wu_precipitation > thresholds["precipitation_max"]:
+            print("[WU] Precipitation exceeds safe limit!")
+            return False
+
+    # If data exists and none of the thresholds are violated, it's safe.
+    return True
+
+# -------------------- Dome Control --------------------
+def open_dome(dome):
+    global dome_state
+    if dome_state != "OPEN":
+        try:
+            dome.OpenShutter()
+            dome_state = "OPEN"
+            print("Dome is now OPEN.")
+        except Exception as e:
+            print(f"Error opening dome: {e}")
+
+def close_dome(dome):
+    global dome_state
+    if dome_state != "CLOSED":
+        try:
+            dome.CloseShutter()
+            dome_state = "CLOSED"
+            print("Dome is now CLOSED.")
+        except Exception as e:
+            print(f"Error closing dome: {e}")
+
+def get_dome_control():
+    try:
+        util = win32com.client.Dispatch("ACP.Util")  # Access ACP's Util object
+        dome = util.Dome  # Get the Dome control from Util
+        print(f"Dome object: {dome}")  # Print dome object to verify
+        return dome
+    except Exception as e:
+        print(f"Error connecting to ACP Dome: {e}")
+        return None
+
+# -------------------- Dome Control Loop --------------------
+def dome_control_loop():
+    dome = get_dome_control()  # Get the ACP Dome control object
+    if not dome:
+        print("Unable to access dome control. Exiting.")
+        return
+
+    global last_accu_request_time
+
+    while True:
+        # Check if enough time has passed to fetch AccuWeather data
+        current_time = time.time()
+        if current_time - last_accu_request_time >= ACCU_UPDATE_INTERVAL:
+            accu_data = fetch_accuweather(ACCU_API_KEY, *get_location_key(ACCU_API_KEY, ACCU_COUNTRY_CODE, ACCU_CITY))
+            last_accu_request_time = current_time  # Update the last request time
+        
+        # Fetch Weather Underground data every 30 seconds
+        wu_data = fetch_weather_underground()
+
+        # Perform weather safety checks
+        global latest_accu_safe, latest_wu_safe
+        latest_accu_safe = is_weather_safe(accu_data, None, accu_safety_thresholds, "AccuWeather")
+        latest_wu_safe = is_weather_safe(None, wu_data, wu_safety_thresholds, "WU")
+
+        # Control dome based on weather conditions
+        overall_safe = latest_accu_safe and latest_wu_safe
+        if overall_safe:
+            open_dome(dome)
+        else:
+            close_dome(dome)
+
+        time.sleep(30)  # Check every 30 seconds
+
+# Run the dome control loop
+dome_control_loop()
