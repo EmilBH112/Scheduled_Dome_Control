@@ -1,0 +1,4 @@
+function main() {
+    var shell = new ActiveXObject("WScript.Shell");
+    shell.Run('cmd.exe /k python "C:\\Users\\bco-exhibit\\source\\repos\\PythonApplication10\\PythonApplication10\\Python fro acp.py"', 1, true);
+}
